@@ -29,3 +29,22 @@ A simple, self-hosted dashboard tracking cryptocurrency metrics using **CoinGeck
 - CoinGecko free API (no key needed, respect rate limits ~30 calls/min).
 - SQLite file is local; for production, consider PostgreSQL or scheduled cloud runs.
 - Add your own .pbix file to the repo if desired (gitignore large binaries if preferred).
+
+
+
+# Crypto Metrics Power BI / SQL Dashboard / Yield farming/ NFTs
+
+
+## New Features (Yield Farming & NFT Trackers)
+- **Yield Farming Dashboard**: Top pools by APY (base/reward), TVL, chains/projects like Aave, Uniswap. Sort for best opportunities.
+- **NFT Collections Dashboard**: Top 100 collections by 24h volume (Ethereum focus), with floor price, sales count, avg price.
+- Data from DeFi Llama (yields) & OpenSea (NFTs—needs free API key).
+
+## Setup Additions
+- Get OpenSea API key: Sign up at opensea.io, go to API section, generate key.
+- Add to env or hardcode in script (for testing): `OPENSEA_API_KEY = 'your_key'`
+- Run `python etl/fetch_crypto_data.py` — now fetches all data.
+- In Power BI, load new tables: `yield_pools` and `nft_collections`.
+- Build new pages/visuals (see powerbi_setup.md).
+
+Notes: OpenSea rate limits ~4 req/sec; respect it. For more chains/NFTs, tweak params.
