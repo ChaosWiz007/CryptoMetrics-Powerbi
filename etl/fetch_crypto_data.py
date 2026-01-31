@@ -2,13 +2,17 @@ import requests
 import sqlite3
 from datetime import date
 from pathlib import Path
+import os  # for API key
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "crypto.db"
 
+OPENSEA_API_KEY = os.environ.get('OPENSEA_API_KEY', 'your_opensea_api_key_here')  # Replace or use env var
+
 def create_tables(conn):
     cursor = conn.cursor()
+    # Existing tables (keep)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS snapshots (
             date TEXT,
@@ -36,15 +40,105 @@ def create_tables(conn):
             btc_dominance REAL
         )
     ''')
+    # New: Yield Pools
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS yield_pools (
+            date TEXT,
+            pool_id TEXT,
+            chain TEXT,
+            project TEXT,
+            symbol TEXT,
+            tvl_usd REAL,
+            apy REAL,
+            apy_base REAL,
+            apy_reward REAL,
+            volume_usd_1d REAL,
+            stablecoin INTEGER,
+            PRIMARY KEY (date, pool_id)
+        )
+    ''')
+    # New: NFT Collections
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS nft_collections (
+            date TEXT,
+            slug TEXT,
+            name TEXT,
+            floor_price_eth REAL,
+            floor_price_usd REAL,
+            one_day_volume_eth REAL,
+            one_day_volume_usd REAL,
+            one_day_sales REAL,
+            one_day_avg_price_eth REAL,
+            total_supply INTEGER,
+            num_owners INTEGER,
+            PRIMARY KEY (date, slug)
+        )
+    ''')
     conn.commit()
+
+def fetch_yields(conn):
+    today = date.today().isoformat()
+    url = "https://yields.llama.fi/pools"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()['data']
+    # Sort by APY desc, take top 250 for best opportunities
+    top_yields = sorted(data, key=lambda x: x.get('apy', 0), reverse=True)[:250]
+    
+    cursor = conn.cursor()
+    for pool in top_yields:
+        cursor.execute('''
+            INSERT OR REPLACE INTO yield_pools 
+            (date, pool_id, chain, project, symbol, tvl_usd, apy, apy_base, apy_reward, volume_usd_1d, stablecoin)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            today, pool.get('pool'), pool.get('chain'), pool.get('project'), pool.get('symbol'),
+            pool.get('tvlUsd'), pool.get('apy'), pool.get('apyBase'), pool.get('apyReward'),
+            pool.get('volumeUsd1d'), 1 if pool.get('stablecoin') else 0
+        ))
+    conn.commit()
+    print(f"Fetched {len(top_yields)} top yield pools for {today}.")
+
+def fetch_nfts(conn):
+    today = date.today().isoformat()
+    url = "https://api.opensea.io/v2/collections"
+    params = {
+        "chain_identifier": "ethereum",  # Focus on ETH for top volume; add others if needed
+        "order_by": "one_day_volume",
+        "order_direction": "desc",
+        "limit": 100  # Top 100 by volume
+    }
+    headers = {"X-API-KEY": OPENSEA_API_KEY}
+    resp = requests.get(url, params=params, headers=headers, timeout=30)
+    resp.raise_for_status()
+    collections = resp.json()['collections']
+    
+    cursor = conn.cursor()
+    for coll in collections:
+        stats = coll.get('stats', {}) or {}
+        cursor.execute('''
+            INSERT OR REPLACE INTO nft_collections 
+            (date, slug, name, floor_price_eth, floor_price_usd, one_day_volume_eth, 
+             one_day_volume_usd, one_day_sales, one_day_avg_price_eth, total_supply, num_owners)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            today, coll.get('slug'), coll.get('name'),
+            stats.get('floor_price'), stats.get('floor_price_usd'),
+            stats.get('one_day_volume'), stats.get('one_day_volume_usd'),
+            stats.get('one_day_sales'), stats.get('one_day_average_price'),
+            coll.get('total_supply'), coll.get('num_owners')
+        ))
+    conn.commit()
+    print(f"Fetched {len(collections)} top NFT collections for {today}.")
 
 def fetch_and_store():
     conn = sqlite3.connect(DB_PATH)
     create_tables(conn)
-    cursor = conn.cursor()
+    
+    # Existing fetches (coins & global)
     today = date.today().isoformat()
+    cursor = conn.cursor()
 
-    # Fetch coin markets
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -74,7 +168,6 @@ def fetch_and_store():
             coin.get('ath'), coin.get('ath_date'), coin.get('last_updated')
         ))
 
-    # Fetch global
     resp = requests.get("https://api.coingecko.com/api/v3/global", timeout=15)
     resp.raise_for_status()
     gdata = resp.json()['data']
@@ -89,9 +182,13 @@ def fetch_and_store():
         gdata.get('btc_dominance')
     ))
 
+    # New fetches
+    fetch_yields(conn)
+    fetch_nfts(conn)
+    
     conn.commit()
     conn.close()
-    print(f"Data updated for {today} - {len(markets)} coins.")
+    print(f"All data updated for {today}.")
 
 if __name__ == "__main__":
     fetch_and_store()
